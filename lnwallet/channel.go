@@ -337,6 +337,8 @@ type commitment struct {
 	// within the commitment chain. This balance is computed by properly
 	// evaluating all the add/remove/settle log entries before the listed
 	// indexes.
+	//
+	// NB: This is the balance *before* subtracting any commitment fee.
 	ourBalance   lnwire.MilliSatoshi
 	theirBalance lnwire.MilliSatoshi
 
@@ -1941,7 +1943,7 @@ func htlcSuccessFee(feePerKw btcutil.Amount) btcutil.Amount {
 // htlcIsDust determines if an HTLC output is dust or not depending on two
 // bits: if the HTLC is incoming and if the HTLC will be placed on our
 // commitment transaction, or theirs. These two pieces of information are
-// require as we currently used second-level HTLC transactions ass off-chain
+// require as we currently used second-level HTLC transactions as off-chain
 // covenants. Depending on the two bits, we'll either be using a timeout or
 // success transaction which have different weights.
 func htlcIsDust(incoming, ourCommit bool,
@@ -2677,7 +2679,7 @@ func (lc *LightningChannel) SignNextCommitment() (lnwire.Sig, []lnwire.Sig, erro
 	// party set up when we initially set up the channel. If we are, then
 	// we'll abort this state transition.
 	err := lc.validateCommitmentSanity(remoteACKedIndex,
-		lc.localUpdateLog.logIndex, false, true, true)
+		lc.localUpdateLog.logIndex, true, nil)
 	if err != nil {
 		return sig, htlcSigs, err
 	}
@@ -3036,6 +3038,8 @@ func (lc *LightningChannel) ChanSyncMsg() (*lnwire.ChannelReestablish, error) {
 	}, nil
 }
 
+// computeView
+// TODO: doc, returned balances before subtracting fees.
 func (lc *LightningChannel) computeView(view *htlcView, remoteChain bool,
 	updateState bool) (lnwire.MilliSatoshi, lnwire.MilliSatoshi, int64,
 	*htlcView, btcutil.Amount) {
@@ -3064,6 +3068,7 @@ func (lc *LightningChannel) computeView(view *htlcView, remoteChain bool,
 		theirBalance += lnwire.NewMSatFromSatoshis(
 			commitChain.tip().fee)
 	}
+
 	nextHeight := commitChain.tip().height + 1
 
 	// We evaluate the view at this stage, meaning settled and
@@ -3134,19 +3139,6 @@ func (lc *LightningChannel) computeView(view *htlcView, remoteChain bool,
 
 	totalCommitWeight := CommitWeight + totalHtlcWeight
 
-	// With the weight known, we can now calculate the commitment fee,
-	// ensuring that we account for any dust outputs trimmed above.
-	commitFee := btcutil.Amount((int64(feePerKw) * totalCommitWeight) / 1000)
-
-	// Currently, within the protocol, the initiator always pays the fees.
-	// So we'll subtract the fee amount from the balance of the current
-	// initiator.
-	if lc.channelState.IsInitiator {
-		ourBalance -= lnwire.NewMSatFromSatoshis(commitFee)
-	} else if !lc.channelState.IsInitiator {
-		theirBalance -= lnwire.NewMSatFromSatoshis(commitFee)
-	}
-
 	return ourBalance, theirBalance, totalCommitWeight, filteredHTLCView, feePerKw
 }
 
@@ -3177,8 +3169,17 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 	ourInitialBalance := commitChain.tip().ourBalance
 	theirInitialBalance := commitChain.tip().theirBalance
 
-	ourBalance, theirBalance, _, filteredView, _ := lc.computeView(view,
-		remoteChain, false)
+	ourBalance, theirBalance, commitWeight, filteredView, feePerKw :=
+		lc.computeView(view, remoteChain, false)
+
+	// Calculate the commitment fee, and subtract it from the
+	// initiator's balance.
+	commitFee := btcutil.Amount((int64(feePerKw) * commitWeight) / 1000)
+	if lc.channelState.IsInitiator {
+		ourBalance -= lnwire.NewMSatFromSatoshis(commitFee)
+	} else {
+		theirBalance -= lnwire.NewMSatFromSatoshis(commitFee)
+	}
 
 	// If the added HTLCs will decrease the balance, make sure
 	// they won't dip the local and remote balances below the
@@ -3453,7 +3454,7 @@ func (lc *LightningChannel) ReceiveNewCommitment(commitSig lnwire.Sig,
 	// the constraints we specified during initial channel setup. If not,
 	// then we'll abort the channel as they've violated our constraints.
 	err := lc.validateCommitmentSanity(lc.remoteUpdateLog.logIndex,
-		localACKedIndex, false, true, true)
+		localACKedIndex, false, nil)
 	if err != nil {
 		return err
 	}
@@ -3472,8 +3473,9 @@ func (lc *LightningChannel) ReceiveNewCommitment(commitSig lnwire.Sig,
 		lc.remoteChanCfg)
 
 	// With the current commitment point re-calculated, construct the new
-	// commitment view which includes all the entries we know of in their
-	// HTLC log, and up to ourLogIndex in our HTLC log.
+	// commitment view which includes all the entries (pending or committed)
+	// we know of in the remote node's HTLC log, but only our local changes
+	// up to the last change the remote node has ACK'd.
 	localCommitmentView, err := lc.fetchCommitmentView(
 		false, localACKedIndex, localHtlcIndex,
 		lc.remoteUpdateLog.logIndex, lc.remoteUpdateLog.htlcCounter,
@@ -3831,11 +3833,6 @@ func (lc *LightningChannel) ReceiveHTLC(htlc *lnwire.UpdateAddHTLC) (uint64, err
 	if htlc.ID != lc.remoteUpdateLog.htlcCounter {
 		return 0, fmt.Errorf("ID %d on HTLC add does not match expected next "+
 			"ID %d", htlc.ID, lc.remoteUpdateLog.htlcCounter)
-	}
-
-	if err := lc.validateCommitmentSanity(lc.remoteUpdateLog.logIndex,
-		lc.localUpdateLog.logIndex, true, false, true); err != nil {
-		return 0, err
 	}
 
 	pd := &PaymentDescriptor{
@@ -5373,4 +5370,9 @@ func (lc *LightningChannel) ActiveHtlcs() []channeldb.HTLC {
 	}
 
 	return activeHtlcs
+}
+
+// LocalChanReserve returns our local ChanReserve requirement for the remote party.
+func (lc *LightningChannel) LocalChanReserve() btcutil.Amount {
+	return lc.localChanCfg.ChanReserve
 }
