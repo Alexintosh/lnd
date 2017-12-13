@@ -2322,7 +2322,7 @@ func (lc *LightningChannel) fetchCommitmentView(remoteChain bool,
 	// Initiate feePerKw to the last committed fee for this chain as we'll
 	// need this to determine which HTLC's are dust, and also the final fee
 	// rate.
-	feePerKw := commitChain.tail().feePerKw
+	feePerKw := commitChain.tip().feePerKw
 
 	// Check if any fee updates have taken place since that last
 	// commitment.
@@ -3336,8 +3336,8 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 	// Since the fetched htlc view will include all updates added
 	// after the last committed state, we start with the balances
 	// reflecting that state.
-	ourBalance := commitChain.tail().ourBalance
-	theirBalance := commitChain.tail().theirBalance
+	ourBalance := commitChain.tip().ourBalance
+	theirBalance := commitChain.tip().theirBalance
 
 	// Add the fee from the previous commitment state back to the
 	// initiator's balance, so that the fee can be recalculated and
@@ -3345,12 +3345,12 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 	// the number of outstanding HTLCs has changed.
 	if lc.channelState.IsInitiator {
 		ourBalance += lnwire.NewMSatFromSatoshis(
-			commitChain.tail().fee)
+			commitChain.tip().fee)
 	} else if !lc.channelState.IsInitiator {
 		theirBalance += lnwire.NewMSatFromSatoshis(
-			commitChain.tail().fee)
+			commitChain.tip().fee)
 	}
-	nextHeight := commitChain.tail().height + 1
+	nextHeight := commitChain.tip().height + 1
 
 	// We evaluate the view at this stage, meaning settled and
 	// failed HTLCs will remove their corresponding added HTLCs.
@@ -3368,7 +3368,7 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 	// Initiate feePerKw to the last committed fee for this chain as we'll
 	// need this to determine which HTLC's are dust, and also the final fee
 	// rate.
-	feePerKw := commitChain.tail().feePerKw
+	feePerKw := commitChain.tip().feePerKw
 
 	// Check if any fee updates have taken place since that last
 	// commitment.
