@@ -4366,7 +4366,7 @@ func TestDesyncHTLCs(t *testing.T) {
 	// because the balance is unavailable.
 	htlcAmt = lnwire.NewMSatFromSatoshis(1 * btcutil.SatoshiPerBitcoin)
 	htlc, _ = createHTLC(1, htlcAmt)
-	if _, err = aliceChannel.AddHTLC(htlc); err != ErrInsufficientBalance {
+	if _, err = aliceChannel.AddHTLC(htlc); err != ErrBelowChanReserve {
 		t.Fatalf("expected ErrInsufficientBalance, instead received: %v",
 			err)
 	}
