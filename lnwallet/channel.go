@@ -64,10 +64,6 @@ var (
 	ErrBelowMinHTLC = fmt.Errorf("proposed HTLC value is below minimum " +
 		"allowed HTLC value")
 
-	// ErrInsufficientBalance is returned when a proposed HTLC would
-	// exceed the available balance.
-	ErrInsufficientBalance = fmt.Errorf("insufficient local balance")
-
 	// ErrCannotSyncCommitChains is returned if, upon receiving a ChanSync
 	// message, the state machine deems that is unable to properly
 	// synchronize states with the remote peer.
@@ -3174,8 +3170,17 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 	ourInitialBalance := commitChain.tip().ourBalance
 	theirInitialBalance := commitChain.tip().theirBalance
 
-	ourBalance, theirBalance, _, filteredView, _ := lc.computeView(view,
-		remoteChain, false)
+	ourBalance, theirBalance, commitWeight, filteredView, feePerKw :=
+		lc.computeView(view, remoteChain, false)
+
+	// Calculate the commitment fee, and subtract it from the
+	// initiator's balance.
+	commitFee := btcutil.Amount((int64(feePerKw) * commitWeight) / 1000)
+	if lc.channelState.IsInitiator {
+		ourBalance -= lnwire.NewMSatFromSatoshis(commitFee)
+	} else {
+		theirBalance -= lnwire.NewMSatFromSatoshis(commitFee)
+	}
 
 	// If the added HTLCs will decrease the balance, make sure
 	// they won't dip the local and remote balances below the
@@ -3796,38 +3801,6 @@ func (lc *LightningChannel) AddHTLC(htlc *lnwire.UpdateAddHTLC) (uint64, error) 
 	lc.Lock()
 	defer lc.Unlock()
 
-	// To ensure that we can actually fully accept this new HTLC, we'll
-	// calculate the current available bandwidth, and subtract the value of
-	// the HTLC from it.
-	initialBalance, _ := lc.availableBalance()
-	availableBalance := initialBalance
-	availableBalance -= htlc.Amount
-
-	feePerKw := lc.channelState.LocalCommitment.FeePerKw
-	dustLimit := lc.channelState.LocalChanCfg.DustLimit
-	htlcIsDust := htlcIsDust(
-		false, true, feePerKw, htlc.Amount.ToSatoshis(), dustLimit,
-	)
-
-	// If this HTLC is not dust, and we're the initiator, then we'll also
-	// subtract the amount we'll need to pay in fees for this HTLC.
-	if !htlcIsDust && lc.channelState.IsInitiator {
-		htlcFee := lnwire.NewMSatFromSatoshis(
-			btcutil.Amount((int64(feePerKw) * HtlcWeight) / 1000),
-		)
-		availableBalance -= htlcFee
-	}
-
-	// If this value is negative, then we can't accept the HTLC, so we'll
-	// reject it with an error.
-	if availableBalance < 0 {
-		// TODO(roasbeef): also needs to respect reservation
-		//  * expand to add context err msg
-		walletLog.Errorf("Unable to carry added HTLC: amt=%v, bal=%v",
-			htlc.Amount, availableBalance)
-		return 0, ErrInsufficientBalance
-	}
-
 	pd := &PaymentDescriptor{
 		EntryType: Add,
 		RHash:     PaymentHash(htlc.PaymentHash),
@@ -3838,6 +3811,8 @@ func (lc *LightningChannel) AddHTLC(htlc *lnwire.UpdateAddHTLC) (uint64, error) 
 		OnionBlob: htlc.OnionBlob[:],
 	}
 
+	// Make sure adding this HTLC won't violate any of the constrainst
+	// we must keep on our commitment transaction.
 	remoteACKedIndex := lc.localCommitChain.tail().theirMessageIndex
 	if err := lc.validateCommitmentSanity(remoteACKedIndex,
 		lc.localUpdateLog.logIndex, true, pd); err != nil {
@@ -5096,13 +5071,9 @@ func (lc *LightningChannel) availableBalance() (lnwire.MilliSatoshi, int64) {
 	// Then compute our current balance for that view.
 	ourBalance, _, commitWeight, _, feePerKw := lc.computeView(htlcView, false, false)
 
-	// With the weight known, we can now calculate the commitment fee,
-	// ensuring that we account for any dust outputs trimmed above.
+	// If we are the channel initiator, we must remember to subtract the
+	// commitment fee from our available balance.
 	commitFee := btcutil.Amount((int64(feePerKw) * commitWeight) / 1000)
-
-	// Currently, within the protocol, the initiator always pays the fees.
-	// So we'll subtract the fee amount from the balance of the current
-	// initiator.
 	if lc.channelState.IsInitiator {
 		ourBalance -= lnwire.NewMSatFromSatoshis(commitFee)
 	}
