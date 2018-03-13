@@ -394,6 +394,16 @@ func testSpendNotification(miner *rpctest.Harness,
 		spendClients[i] = spentIntent
 	}
 
+	// For each event we registered for above, we create a goroutine which
+	// will listen on the event channel, passing it proxying each
+	// notification into a single which will be examined below.
+	spentNtfn := make(chan *chainntnfs.SpendDetail, numClients)
+	for i := 0; i < numClients; i++ {
+		go func(c *chainntnfs.SpendEvent) {
+			spentNtfn <- <-c.Spend
+		}(spendClients[i])
+	}
+
 	// Next, create a new transaction spending that output.
 	spendingTx := createSpendTx(outpoint, pkScript, t)
 
@@ -408,6 +418,16 @@ func testSpendNotification(miner *rpctest.Harness,
 		t.Fatalf("tx not relayed to miner: %v", err)
 	}
 
+	// We only want to get notified about the spend after a spending tx has
+	// been confirmed, so make sure no notification has been triggered yet.
+	for i := 0; i < numClients; i++ {
+		select {
+		case <-spentNtfn:
+			t.Fatalf("unexpectedly got notified about unmined spend")
+		default:
+		}
+	}
+
 	// Now we mine a single block, which should include our spend. The
 	// notification should also be sent off.
 	if _, err := miner.Node.Generate(1); err != nil {
@@ -417,16 +437,6 @@ func testSpendNotification(miner *rpctest.Harness,
 	_, currentHeight, err = miner.Node.GetBestBlock()
 	if err != nil {
 		t.Fatalf("unable to get current height: %v", err)
-	}
-
-	// For each event we registered for above, we create a goroutine which
-	// will listen on the event channel, passing it proxying each
-	// notification into a single which will be examined below.
-	spentNtfn := make(chan *chainntnfs.SpendDetail, numClients)
-	for i := 0; i < numClients; i++ {
-		go func(c *chainntnfs.SpendEvent) {
-			spentNtfn <- <-c.Spend
-		}(spendClients[i])
 	}
 
 	for i := 0; i < numClients; i++ {
