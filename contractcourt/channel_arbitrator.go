@@ -85,11 +85,17 @@ type ChannelArbitratorConfig struct {
 	// channel.
 	ChainEvents *ChainEventSubscription
 
-	// ForceCloseChan should force close the contract that this attendant
-	// is watching over. We'll use this when we decide that we need to go
-	// to chain. The returned summary contains all items needed to
-	// eventually resolve all outputs on chain.
-	ForceCloseChan func() (*lnwallet.ForceCloseSummary, error)
+	// ForceCloseSummary should mark the channel as force closed, and
+	// return a summary containing all items needed to eventually resolve
+	// all outputs on chain. We'll use this when we decide that we need to
+	// go to chain. The returned
+	// TODO(halseth): better way of getting needed info, s.t. this can be
+	// called only once.
+	ForceCloseSummary func() (*lnwallet.ForceCloseSummary, error)
+
+	// MarkLinkInactive should mark the link associated with this channel as
+	// inactive, such that it won't accept ony more updates.
+	MarkLinkInactive func() error
 
 	// CloseChannel is a function closure that marks a channel under watch
 	// as "closing". In this phase, we will no longer accept any updates to
@@ -426,10 +432,12 @@ func (c *ChannelArbitrator) stateStep(bestHeight uint32, bestHash *chainhash.Has
 		// Now that we have all the actions decided for the set of
 		// HTLC's, we'll broadcast the commitment transaction, and
 		// signal the link to exit.
-		//
-		// TODO(roasbeef): need to report to switch that channel is
-		// inactive, should close link
-		closeSummary, err := c.cfg.ForceCloseChan()
+		if err := c.cfg.MarkLinkInactive(); err != nil {
+			log.Errorf("ChannelArbitrator(%v): unable to "+
+				"mark link inactive: %v", c.cfg.ChanPoint, err)
+		}
+
+		closeSummary, err := c.cfg.ForceCloseSummary()
 		if err != nil {
 			log.Errorf("ChannelArbitrator(%v): unable to "+
 				"force close: %v", c.cfg.ChanPoint, err)
