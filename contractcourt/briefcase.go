@@ -112,25 +112,31 @@ const (
 	// so yet.
 	StateBroadcastCommit ArbitratorState = 1
 
+	// StateCommitmentBroadcasted is a state that indicates that the
+	// attendant has broadcasted the commitment transaction, and is now
+	// waiting for it to confirm.
+	StateCommitmentBroadcasted ArbitratorState = 2
+
 	// StateContractClosed is a state that indicates the contract has
-	// already been "closed". At this point, we can now examine our active
-	// contracts, in order to create the proper resolver for each one.
-	StateContractClosed ArbitratorState = 2
+	// already been "closed", meaning the commitment is confirmed on chain.
+	// At this point, we can now examine our active contracts, in order to
+	// create the proper resolver for each one.
+	StateContractClosed ArbitratorState = 3
 
 	// StateWaitingFullResolution is a state that indicates that the
-	// commitment transaction has been broadcast, and the attendant is now
+	// commitment transaction has been confirmed, and the attendant is now
 	// waiting for all unresolved contracts to be fully resolved.
-	StateWaitingFullResolution ArbitratorState = 3
+	StateWaitingFullResolution ArbitratorState = 4
 
 	// StateFullyResolved is the final state of the attendant. In this
 	// state, all related contracts have been resolved, and the attendant
 	// can now be garbage collected.
-	StateFullyResolved ArbitratorState = 4
+	StateFullyResolved ArbitratorState = 5
 
 	// StateError is the only error state of the resolver. If we enter this
 	// state, then we cannot proceed with manual intervention as a state
 	// transition failed.
-	StateError ArbitratorState = 5
+	StateError ArbitratorState = 6
 )
 
 // String returns a human readable string describing the ArbitratorState.
@@ -141,6 +147,9 @@ func (a ArbitratorState) String() string {
 
 	case StateBroadcastCommit:
 		return "StateBroadcastCommit"
+
+	case StateCommitmentBroadcasted:
+		return "StateCommitmentBroadcasted"
 
 	case StateContractClosed:
 		return "StateContractClosed"
