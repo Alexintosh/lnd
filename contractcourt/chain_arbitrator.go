@@ -196,7 +196,7 @@ func newActiveChannelArbitrator(channel *channeldb.OpenChannel,
 		ChanPoint:   chanPoint,
 		ShortChanID: channel.ShortChanID,
 		BlockEpochs: blockEpoch,
-		ForceCloseChan: func() (*lnwallet.ForceCloseSummary, error) {
+		ForceCloseSummary: func() (*lnwallet.ForceCloseSummary, error) {
 			// With the channels fetched, attempt to locate
 			// the target channel according to its channel
 			// point.
@@ -225,11 +225,10 @@ func newActiveChannelArbitrator(channel *channeldb.OpenChannel,
 			}
 			chanMachine.Stop()
 
-			if err := c.cfg.MarkLinkInactive(chanPoint); err != nil {
-				log.Errorf("unable to mark link inactive: %v", err)
-			}
-
 			return chanMachine.ForceClose()
+		},
+		MarkLinkInactive: func() error {
+			return c.cfg.MarkLinkInactive(chanPoint)
 		},
 		CloseChannel: func(summary *channeldb.ChannelCloseSummary) error {
 			log.Tracef("ChannelArbitrator(%v): closing "+
