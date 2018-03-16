@@ -79,7 +79,6 @@ type BtcdNotifier struct {
 	blockEpochClients map[uint64]*blockEpochRegistration
 
 	chainUpdates *chainntnfs.ConcurrentQueue
-	txUpdates    *chainntnfs.ConcurrentQueue
 
 	wg   sync.WaitGroup
 	quit chan struct{}
@@ -101,7 +100,6 @@ func New(config *rpcclient.ConnConfig) (*BtcdNotifier, error) {
 		spendNotifications: make(map[wire.OutPoint]map[uint64]*spendNotification),
 
 		chainUpdates: chainntnfs.NewConcurrentQueue(10),
-		txUpdates:    chainntnfs.NewConcurrentQueue(10),
 
 		quit: make(chan struct{}),
 	}
@@ -109,7 +107,6 @@ func New(config *rpcclient.ConnConfig) (*BtcdNotifier, error) {
 	ntfnCallbacks := &rpcclient.NotificationHandlers{
 		OnBlockConnected:    notifier.onBlockConnected,
 		OnBlockDisconnected: notifier.onBlockDisconnected,
-		OnRedeemingTx:       notifier.onRedeemingTx,
 	}
 
 	// Disable connecting to btcd within the rpcclient.New method. We
@@ -151,7 +148,6 @@ func (b *BtcdNotifier) Start() error {
 		uint32(currentHeight), reorgSafetyLimit)
 
 	b.chainUpdates.Start()
-	b.txUpdates.Start()
 
 	b.wg.Add(1)
 	go b.notificationDispatcher(currentHeight)
@@ -174,7 +170,6 @@ func (b *BtcdNotifier) Stop() error {
 	b.wg.Wait()
 
 	b.chainUpdates.Stop()
-	b.txUpdates.Stop()
 
 	// Notify all pending clients of our shutdown by closing the related
 	// notification channels.
@@ -207,6 +202,20 @@ func (b *BtcdNotifier) onBlockConnected(hash *chainhash.Hash, height int32, t ti
 	}
 }
 
+// filteredBlock represents a new block which has been connected to the main
+// chain. The slice of transactions will only be populated if the block
+// includes a transaction that confirmed one of our watched txids, or spends
+// one of the outputs currently being watched.
+type filteredBlock struct {
+	hash   chainhash.Hash
+	height uint32
+	txns   []*btcutil.Tx
+
+	// connected is true if this update is a new block and false if it is a
+	// disconnected block.
+	connect bool
+}
+
 // onBlockDisconnected implements on OnBlockDisconnected callback for rpcclient.
 func (b *BtcdNotifier) onBlockDisconnected(hash *chainhash.Hash, height int32, t time.Time) {
 	// Append this new chain update to the end of the queue of new chain
@@ -216,13 +225,6 @@ func (b *BtcdNotifier) onBlockDisconnected(hash *chainhash.Hash, height int32, t
 		blockHeight: height,
 		connect:     false,
 	}
-}
-
-// onRedeemingTx implements on OnRedeemingTx callback for rpcclient.
-func (b *BtcdNotifier) onRedeemingTx(tx *btcutil.Tx, details *btcjson.BlockDetails) {
-	// Append this new transaction update to the end of the queue of new
-	// chain updates.
-	b.txUpdates.ChanIn() <- &txUpdate{tx, details}
 }
 
 // notificationDispatcher is the primary goroutine which handles client
@@ -322,12 +324,15 @@ out:
 				chainntnfs.Log.Infof("New block: height=%v, sha=%v",
 					update.blockHeight, update.blockHash)
 
-				b.notifyBlockEpochs(update.blockHeight, update.blockHash)
-
 				txns := btcutil.NewBlock(rawBlock).Transactions()
-				err = b.txConfNotifier.ConnectTip(update.blockHash,
-					uint32(update.blockHeight), txns)
-				if err != nil {
+
+				block := &filteredBlock{
+					hash:    *update.blockHash,
+					height:  uint32(update.blockHeight),
+					txns:    txns,
+					connect: true,
+				}
+				if err := b.handleBlockConnected(block); err != nil {
 					chainntnfs.Log.Error(err)
 				}
 				continue
@@ -348,52 +353,6 @@ out:
 			err := b.txConfNotifier.DisconnectTip(uint32(update.blockHeight))
 			if err != nil {
 				chainntnfs.Log.Error(err)
-			}
-
-		case item := <-b.txUpdates.ChanOut():
-			newSpend := item.(*txUpdate)
-			spendingTx := newSpend.tx
-
-			// First, check if this transaction spends an output
-			// that has an existing spend notification for it.
-			for i, txIn := range spendingTx.MsgTx().TxIn {
-				prevOut := txIn.PreviousOutPoint
-
-				// If this transaction indeed does spend an
-				// output which we have a registered
-				// notification for, then create a spend
-				// summary, finally sending off the details to
-				// the notification subscriber.
-				if clients, ok := b.spendNotifications[prevOut]; ok {
-					spenderSha := newSpend.tx.Hash()
-					spendDetails := &chainntnfs.SpendDetail{
-						SpentOutPoint:     &prevOut,
-						SpenderTxHash:     spenderSha,
-						SpendingTx:        spendingTx.MsgTx(),
-						SpenderInputIndex: uint32(i),
-					}
-					// TODO(roasbeef): after change to
-					// loadfilter, only notify on block
-					// inclusion?
-					if newSpend.details != nil {
-						spendDetails.SpendingHeight = newSpend.details.Height
-					} else {
-						spendDetails.SpendingHeight = currentHeight + 1
-					}
-
-					for _, ntfn := range clients {
-						chainntnfs.Log.Infof("Dispatching "+
-							"spend notification for "+
-							"outpoint=%v", ntfn.targetOutpoint)
-						ntfn.spendChan <- spendDetails
-
-						// Close spendChan to ensure that any calls to Cancel will not
-						// block. This is safe to do since the channel is buffered, and the
-						// message can still be read by the receiver.
-						close(ntfn.spendChan)
-					}
-					delete(b.spendNotifications, prevOut)
-				}
 			}
 
 		case <-b.quit:
@@ -459,6 +418,63 @@ func (b *BtcdNotifier) historicalConfDetails(txid *chainhash.Hash,
 		TxIndex:     uint32(txIndex),
 	}
 	return &txConf, nil
+}
+
+// handleBlocksConnected applies a chain update for a new block. Any watched
+// transactions included this block will processed to either send notifications
+// now or after numConfirmations confs.
+func (b *BtcdNotifier) handleBlockConnected(newBlock *filteredBlock) error {
+	// First we'll notify any subscribed clients of the block.
+	b.notifyBlockEpochs(int32(newBlock.height), &newBlock.hash)
+
+	// Next, we'll scan over the list of relevant transactions and possibly
+	// dispatch notifications for confirmations and spends.
+	for _, tx := range newBlock.txns {
+		mtx := tx.MsgTx()
+		txSha := mtx.TxHash()
+
+		for i, txIn := range mtx.TxIn {
+			prevOut := txIn.PreviousOutPoint
+
+			// If this transaction indeed does spend an output which we have a
+			// registered notification for, then create a spend summary, finally
+			// sending off the details to the notification subscriber.
+			clients, ok := b.spendNotifications[prevOut]
+			if !ok {
+				continue
+			}
+
+			// TODO(roasbeef): many integration tests expect spend to be
+			// notified within the mempool.
+			spendDetails := &chainntnfs.SpendDetail{
+				SpentOutPoint:     &prevOut,
+				SpenderTxHash:     &txSha,
+				SpendingTx:        mtx,
+				SpenderInputIndex: uint32(i),
+				SpendingHeight:    int32(newBlock.height),
+			}
+
+			for _, ntfn := range clients {
+				chainntnfs.Log.Infof("Dispatching spend notification for "+
+					"outpoint=%v", ntfn.targetOutpoint)
+				ntfn.spendChan <- spendDetails
+
+				// Close spendChan to ensure that any calls to Cancel will not
+				// block. This is safe to do since the channel is buffered, and
+				// the message can still be read by the receiver.
+				close(ntfn.spendChan)
+			}
+
+			delete(b.spendNotifications, prevOut)
+		}
+	}
+
+	// A new block has been connected to the main chain.
+	// Send out any N confirmation notifications which may
+	// have been triggered by this new block.
+	b.txConfNotifier.ConnectTip(&newBlock.hash, newBlock.height, newBlock.txns)
+
+	return nil
 }
 
 // notifyBlockEpochs notifies all registered block epoch clients of the newly
