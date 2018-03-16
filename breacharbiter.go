@@ -709,7 +709,7 @@ func (b *breachArbiter) breachObserver(
 
 	// The channel has been closed by a normal means: force closing with
 	// the latest commitment transaction.
-	case <-chainEvents.UnilateralClosure:
+	case <-chainEvents.RemoteUnilateralClosure:
 		// Launch a goroutine to cancel out this contract within the
 		// breachArbiter's main goroutine.
 		b.wg.Add(1)
