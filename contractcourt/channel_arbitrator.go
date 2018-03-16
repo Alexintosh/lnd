@@ -1598,5 +1598,6 @@ func (c *ChannelArbitrator) markContractClosed(closeTx *wire.MsgTx,
 		closeInfo.TimeLockedBalance += htlcValue
 	}
 
+	// TODO: should this be called more places?
 	return c.cfg.CloseChannel(closeInfo)
 }

@@ -458,6 +458,7 @@ func (c *chainWatcher) dispatchCooperativeClose(commitSpend *chainntnfs.SpendDet
 
 	// Finally, we'll launch a goroutine to mark the channel as fully
 	// closed once the transaction confirmed.
+	// TODO: should be confirmed already at this point
 	go func() {
 		confNtfn, err := c.notifier.RegisterConfirmationsNtfn(
 			commitSpend.SpenderTxHash, 1,

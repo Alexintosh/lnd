@@ -972,8 +972,10 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 		// As the first part of the force closure, we first fetch the
 		// channel from the database, then execute a direct force
 		// closure broadcasting our current commitment transaction.
+		fmt.Println("johan", "fetching active channels")
 		channel, err := r.fetchActiveChannel(*chanPoint)
 		if err != nil {
+			fmt.Println("johan", "unable tp find channel")
 			return err
 		}
 		channel.Stop()
@@ -988,23 +990,28 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 		// as eligible for forwarding HTLC's. If the peer is online,
 		// then we'll also purge all of its indexes.
 		remotePub := &channel.StateSnapshot().RemoteIdentity
+		fmt.Println("johan", "finding peer ")
 		if peer, err := r.server.FindPeer(remotePub); err == nil {
 			// TODO(roasbeef): actually get the active channel
 			// instead too?
 			//  * so only need to grab from database
+			fmt.Println("johan", "did find peer, wiping")
 			peer.WipeChannel(channel.ChannelPoint())
 		} else {
 			chanID := lnwire.NewChanIDFromOutPoint(channel.ChannelPoint())
+			fmt.Println("johan", "did not find peer, removing from link")
 			r.server.htlcSwitch.RemoveLink(chanID)
 		}
 
 		// With the necessary indexes cleaned up, we'll now force close
 		// the channel.
 		chainArbitrator := r.server.chainArb
+		fmt.Println("johan", "telling arbitrator to force close")
 		closingTx, err := chainArbitrator.ForceCloseContract(
 			*chanPoint,
 		)
 		if err != nil {
+			fmt.Println("johan", "unable to force close")
 			rpcsLog.Errorf("unable to force close transaction: %v", err)
 			return err
 		}
@@ -1014,6 +1021,7 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 		// With the transaction broadcast, we send our first update to
 		// the client.
 		updateChan = make(chan *lnrpc.CloseStatusUpdate, 2)
+		fmt.Println("johan", "send update")
 		updateChan <- &lnrpc.CloseStatusUpdate{
 			Update: &lnrpc.CloseStatusUpdate_ClosePending{
 				ClosePending: &lnrpc.PendingUpdate{
@@ -1024,10 +1032,12 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 
 		errChan = make(chan error, 1)
 		notifier := r.server.cc.chainNotifier
+		fmt.Println("johan", "waiting for cloes")
 		go waitForChanToClose(uint32(bestHeight), notifier, errChan, chanPoint,
 			&closingTxid, func() {
 				// Respond to the local subsystem which
 				// requested the channel closure.
+				fmt.Println("johan", "close completed ")
 				updateChan <- &lnrpc.CloseStatusUpdate{
 					Update: &lnrpc.CloseStatusUpdate_ChanClose{
 						ChanClose: &lnrpc.ChannelCloseUpdate{
