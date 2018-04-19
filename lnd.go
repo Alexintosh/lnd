@@ -339,7 +339,6 @@ func lndMain() error {
 				idPrivKey.PubKey())
 			return <-errChan
 		},
-		ArbiterChan:      server.breachArbiter.newContracts,
 		SendToPeer:       server.SendToPeer,
 		NotifyWhenOnline: server.NotifyWhenOnline,
 		FindPeer:         server.FindPeer,
