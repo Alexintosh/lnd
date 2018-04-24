@@ -190,7 +190,7 @@ func (c *chainWatcher) Start() error {
 	}
 
 	spendNtfn, err := c.notifier.RegisterSpendNtfn(
-		fundingOut, heightHint, true,
+		fundingOut, heightHint, false,
 	)
 	if err != nil {
 		return err
@@ -455,8 +455,8 @@ func (c *chainWatcher) dispatchCooperativeClose(commitSpend *chainntnfs.SpendDet
 		CloseHeight:    uint32(commitSpend.SpendingHeight),
 		SettledBalance: localAmt,
 		CloseType:      channeldb.CooperativeClose,
+		CloseStatus:    channeldb.PendingResolution,
 		ShortChanID:    c.chanState.ShortChanID,
-		IsPending:      true,
 	}
 	err := c.chanState.CloseChannel(closeSummary)
 	if err != nil && err != channeldb.ErrNoActiveChannels &&
@@ -466,6 +466,8 @@ func (c *chainWatcher) dispatchCooperativeClose(commitSpend *chainntnfs.SpendDet
 
 	// Finally, we'll launch a goroutine to mark the channel as fully
 	// closed once the transaction confirmed.
+	// TODO(halseth): remove this as it should be already confirmed
+	// at this point, and don't have to go via state PendingResolution.
 	go func() {
 		confNtfn, err := c.notifier.RegisterConfirmationsNtfn(
 			commitSpend.SpenderTxHash, 1,
@@ -532,6 +534,38 @@ func (c *chainWatcher) dispatchLocalForceClose(
 	)
 	if err != nil {
 		return err
+	}
+
+	// As we've detected that the channel has been closed, immediately
+	// delete the state from disk, creating a close summary for future
+	// usage by related sub-systems.
+	chanSnapshot := forceClose.ChanSnapshot
+	closeSummary := &channeldb.ChannelCloseSummary{
+		ChanPoint:   chanSnapshot.ChannelPoint,
+		ChainHash:   chanSnapshot.ChainHash,
+		ClosingTXID: forceClose.CloseTx.TxHash(),
+		RemotePub:   &chanSnapshot.RemoteIdentity,
+		Capacity:    chanSnapshot.Capacity,
+		CloseType:   channeldb.LocalForceClose,
+		CloseStatus: channeldb.PendingResolution,
+		ShortChanID: c.chanState.ShortChanID,
+		CloseHeight: uint32(commitSpend.SpendingHeight),
+	}
+
+	// If our commitment output isn't dust or we have active HTLC's on the
+	// commitment transaction, then we'll populate the balances on the
+	// close channel summary.
+	if forceClose.CommitResolution != nil {
+		closeSummary.SettledBalance = chanSnapshot.LocalBalance.ToSatoshis()
+		closeSummary.TimeLockedBalance = chanSnapshot.LocalBalance.ToSatoshis()
+	}
+	for _, htlc := range forceClose.HtlcResolutions.OutgoingHTLCs {
+		htlcValue := btcutil.Amount(htlc.SweepSignDesc.Output.Value)
+		closeSummary.TimeLockedBalance += htlcValue
+	}
+	err = c.chanState.CloseChannel(closeSummary)
+	if err != nil {
+		return fmt.Errorf("unable to delete channel state: %v", err)
 	}
 
 	// With the event processed, we'll now notify all subscribers of the
@@ -696,7 +730,7 @@ func (c *chainWatcher) dispatchContractBreach(spendEvent *chainntnfs.SpendDetail
 		Capacity:       c.chanState.Capacity,
 		SettledBalance: settledBalance,
 		CloseType:      channeldb.BreachClose,
-		IsPending:      true,
+		CloseStatus:    channeldb.PendingResolution,
 		ShortChanID:    c.chanState.ShortChanID,
 	}
 
