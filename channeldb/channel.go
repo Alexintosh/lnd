@@ -322,11 +322,6 @@ type OpenChannel struct {
 	// negotiate fees, or close the channel.
 	IsInitiator bool
 
-	// IsBorked indicates that the channel has entered an irreconcilable
-	// state, triggered by a state desynchronization or channel breach.
-	// Channels in this state should never be added to the htlc switch.
-	IsBorked bool
-
 	// FundingBroadcastHeight is the height in which the funding
 	// transaction was broadcast. This value can be used by higher level
 	// sub-systems to determine if a channel is stale and/or should have
@@ -565,34 +560,25 @@ func (c *OpenChannel) MarkAsOpen(openLoc lnwire.ShortChannelID) error {
 }
 
 // MarkBorked marks the event when the channel as reached an irreconcilable
-// state, such as a channel breach or state desynchronization. Borked channels
-// should never be added to the switch.
+// state, such as a channel breach or state desynchronization. This will move
+// the channel from the open channel bucket into the closed channel bucket,
+// with CloseType Unknown. Borked channels should never be added to the
+// switch.
 func (c *OpenChannel) MarkBorked() error {
 	c.Lock()
 	defer c.Unlock()
 
-	if err := c.Db.Update(func(tx *bolt.Tx) error {
-		chanBucket, err := updateChanBucket(tx, c.IdentityPub,
-			&c.FundingOutpoint, c.ChainHash)
-		if err != nil {
-			return err
-		}
-
-		channel, err := fetchOpenChannel(chanBucket, &c.FundingOutpoint)
-		if err != nil {
-			return err
-		}
-
-		channel.IsBorked = true
-
-		return putOpenChannel(chanBucket, channel)
-	}); err != nil {
-		return err
+	closeInfo := &ChannelCloseSummary{
+		ChanPoint:   c.FundingOutpoint,
+		ChainHash:   c.ChainHash,
+		RemotePub:   c.IdentityPub,
+		Capacity:    c.Capacity,
+		CloseStatus: Borked,
+		CloseType:   Unknown,
+		ShortChanID: c.ShortChanID,
 	}
 
-	c.IsBorked = true
-
-	return nil
+	return c.closeChannel(closeInfo)
 }
 
 // putChannel serializes, and stores the current state of the channel in its
@@ -1477,31 +1463,68 @@ func (c *OpenChannel) FindPreviousState(updateNum uint64) (*ChannelCommitment, e
 	return &commit, nil
 }
 
-// ClosureType is an enum like structure that details exactly _how_ a channel
-// was closed. Three closure types are currently possible: cooperative, force,
-// and breach.
+// ClosureStatus is an enum that details the status of a channel that is no
+// longer open, indicating our view of the channel closure on its way to
+// become fully resolved and closed.
+type ClosureStatus uint8
+
+var (
+	// FullyClosed indicates that the channel was fully closed, with all
+	// contracts resolved and funds swept. We no lnger have to pay attention
+	// to this channel.
+	FullyClosed ClosureStatus = 0
+
+	// PendingResolution indicates that the channels's closing transaction
+	// was confirmed, but there might still contracts waiting to be
+	// resolved.
+	PendingResolution ClosureStatus = 1
+
+	// Borked indicates that the channel has entered an irreconcilable
+	// state, triggered by a state desynchronization or channel breach.
+	// Channels in this state should never be added to the htlc switch.
+	Borked ClosureStatus = 2
+
+	// CommitmentBroadcasted indicates that a commitment for this channel
+	// has been broadcasted, and we'll need to wait for it to be confirmed
+	// before taking further action.
+	CommitmentBroadcasted ClosureStatus = 3
+)
+
+// ClosureType is an enum like structure that details _how_ a channel is
+// closed. Currently six closure types are currently possible: unknown,
+// cooperative, local force close, remote force close, (remote) breach, and
+// funding canceled.
 type ClosureType uint8
 
 const (
+	// Unknown indiates that we for some reason need to consider the
+	// channel closed, but we don't have enough information to predict what
+	// kind of closing transaction will get confirmed.
+	Unknown ClosureType = 0
+
 	// CooperativeClose indicates that a channel has been closed
 	// cooperatively.  This means that both channel peers were online and
 	// signed a new transaction paying out the settled balance of the
 	// contract.
-	CooperativeClose ClosureType = iota
+	CooperativeClose ClosureType = 1
 
-	// ForceClose indicates that one peer unilaterally broadcast their
+	// LocalForceClose indicates that we have unilaterally broadcast our
 	// current commitment state on-chain.
-	ForceClose
+	LocalForceClose ClosureType = 2
 
-	// BreachClose indicates that one peer attempted to broadcast a prior
-	// _revoked_ channel state.
-	BreachClose
+	// RemoteForceClose indicates that the remote peer has unilaterally
+	// broadcast their current commitment state on-chain.
+	RemoteForceClose ClosureType = 3
+
+	// BreachClose indicates that the remote peer attempted to broadcast a
+	// prior _revoked_ channel state.
+	BreachClose ClosureType = 4
 
 	// FundingCanceled indicates that the channel never was fully opened
 	// before it was marked as closed in the database. This can happen if
 	// we or the remote fail at some point during the opening workflow, or
 	// we timeout waiting for the funding transaction to be confirmed.
-	FundingCanceled
+	FundingCanceled ClosureType = 5
 )
 
 // ChannelCloseSummary contains the final state of a channel at the point it
@@ -1549,19 +1572,22 @@ type ChannelCloseSummary struct {
 	// outstanding outgoing HTLC's at the time of channel closure.
 	TimeLockedBalance btcutil.Amount
 
-	// CloseType details exactly _how_ the channel was closed. Three
-	// closure types are possible: cooperative, force, and breach.
+	// CloseType details _how_ the channel was closed. Note that we will
+	// only know the exact type when the closing tx is confirmed in chain.
+	// Before it is confirmed we'll often try our best to predict what type
+	// of transaction close the channel, and update this field when it gets
+	// known.
 	CloseType ClosureType
 
-	// IsPending indicates whether this channel is in the 'pending close'
-	// state, which means the channel closing transaction has been
-	// broadcast, but not confirmed yet or has not yet been fully resolved.
-	// In the case of a channel that has been cooperatively closed, it will
-	// no longer be considered pending as soon as the closing transaction
-	// has been confirmed. However, for channel that have been force
-	// closed, they'll stay marked as "pending" until _all_ the pending
-	// funds have been swept.
-	IsPending bool
+	// CloseStatus indicates whether this channel is fully closed, or if
+	// it's in the 'pending close' state, which means the channel closing
+	// transaction has been broadcast, but not confirmed yet or has not yet
+	// been fully resolved.  In the case of a channel that has been
+	// cooperatively closed, it will be considered FullyClosed as soon as
+	// the closing transaction has been confirmed. However, a channel that
+	// has been force closed or breached, will not be marked FullyClosed
+	// until _all_ the pending funds have been swept.
+	CloseStatus ClosureStatus
 }
 
 // CloseChannel closes a previously active Lightning channel. Closing a channel
@@ -1573,6 +1599,10 @@ func (c *OpenChannel) CloseChannel(summary *ChannelCloseSummary) error {
 	c.Lock()
 	defer c.Unlock()
 
+	return c.closeChannel(summary)
+}
+
+func (c *OpenChannel) closeChannel(summary *ChannelCloseSummary) error {
 	return c.Db.Update(func(tx *bolt.Tx) error {
 		openChanBucket := tx.Bucket(openChannelBucket)
 		if openChanBucket == nil {
@@ -1763,7 +1793,7 @@ func serializeChannelCloseSummary(w io.Writer, cs *ChannelCloseSummary) error {
 	return writeElements(w,
 		cs.ChanPoint, cs.ShortChanID, cs.ChainHash, cs.ClosingTXID,
 		cs.CloseHeight, cs.RemotePub, cs.Capacity, cs.SettledBalance,
-		cs.TimeLockedBalance, cs.CloseType, cs.IsPending,
+		cs.TimeLockedBalance, cs.CloseType, cs.CloseStatus,
 	)
 }
 
@@ -1790,7 +1820,7 @@ func deserializeCloseChannelSummary(r io.Reader) (*ChannelCloseSummary, error) {
 	err := readElements(r,
 		&c.ChanPoint, &c.ShortChanID, &c.ChainHash, &c.ClosingTXID,
 		&c.CloseHeight, &c.RemotePub, &c.Capacity, &c.SettledBalance,
-		&c.TimeLockedBalance, &c.CloseType, &c.IsPending,
+		&c.TimeLockedBalance, &c.CloseType, &c.CloseStatus,
 	)
 	if err != nil {
 		return nil, err
@@ -1804,10 +1834,9 @@ func putChanInfo(chanBucket *bolt.Bucket, channel *OpenChannel) error {
 	if err := writeElements(&w,
 		channel.ChanType, channel.ChainHash, channel.FundingOutpoint,
 		channel.ShortChanID, channel.IsPending, channel.IsInitiator,
-		channel.IsBorked, channel.FundingBroadcastHeight,
-		channel.NumConfsRequired, channel.ChannelFlags,
-		channel.IdentityPub, channel.Capacity, channel.TotalMSatSent,
-		channel.TotalMSatReceived,
+		channel.FundingBroadcastHeight, channel.NumConfsRequired,
+		channel.ChannelFlags, channel.IdentityPub, channel.Capacity,
+		channel.TotalMSatSent, channel.TotalMSatReceived,
 	); err != nil {
 		return err
 	}
@@ -1912,10 +1941,9 @@ func fetchChanInfo(chanBucket *bolt.Bucket, channel *OpenChannel) error {
 	if err := readElements(r,
 		&channel.ChanType, &channel.ChainHash, &channel.FundingOutpoint,
 		&channel.ShortChanID, &channel.IsPending, &channel.IsInitiator,
-		&channel.IsBorked, &channel.FundingBroadcastHeight,
-		&channel.NumConfsRequired, &channel.ChannelFlags,
-		&channel.IdentityPub, &channel.Capacity, &channel.TotalMSatSent,
-		&channel.TotalMSatReceived,
+		&channel.FundingBroadcastHeight, &channel.NumConfsRequired,
+		&channel.ChannelFlags, &channel.IdentityPub, &channel.Capacity,
+		&channel.TotalMSatSent, &channel.TotalMSatReceived,
 	); err != nil {
 		return err
 	}
