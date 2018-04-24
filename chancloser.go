@@ -452,8 +452,8 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 			Capacity:       chanInfo.Capacity,
 			SettledBalance: finalLocalBalance,
 			CloseType:      channeldb.CooperativeClose,
+			CloseStatus:    channeldb.CommitmentBroadcasted,
 			ShortChanID:    c.cfg.channel.ShortChanID(),
-			IsPending:      true,
 		})
 
 		// TODO(roasbeef): don't need, ChainWatcher will handle
@@ -531,8 +531,8 @@ func (c *channelCloser) proposeCloseSigned(fee btcutil.Amount) (*lnwire.ClosingS
 		Capacity:       chanInfo.Capacity,
 		SettledBalance: localAmt,
 		CloseType:      channeldb.CooperativeClose,
+		CloseStatus:    channeldb.CommitmentBroadcasted,
 		ShortChanID:    c.cfg.channel.ShortChanID(),
-		IsPending:      true,
 	})
 
 	return closeSignedMsg, nil
