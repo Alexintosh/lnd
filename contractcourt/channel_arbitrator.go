@@ -563,7 +563,6 @@ func (c *ChannelArbitrator) stateStep(triggerHeight uint32,
 		// outstanding contracts.
 		htlcResolvers, pktsToSend, err := c.prepContractResolutions(
 			chainActions, contractResolutions, triggerHeight,
-			trigger,
 		)
 		if err != nil {
 			log.Errorf("ChannelArbitrator(%v): unable to "+
@@ -945,7 +944,6 @@ func (c *ChannelArbitrator) checkChainActions(height uint32,
 // are properly resolved.
 func (c *ChannelArbitrator) prepContractResolutions(htlcActions ChainActionMap,
 	contractResolutions *ContractResolutions, height uint32,
-	trigger transitionTrigger,
 ) ([]ContractResolver, []ResolutionMsg, error) {
 
 	// There may be a class of HTLC's which we can fail back immediately,
