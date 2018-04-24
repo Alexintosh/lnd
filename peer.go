@@ -327,16 +327,7 @@ func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) error {
 		peerLog.Infof("NodeKey(%x) loading ChannelPoint(%v)",
 			p.PubKey(), chanPoint)
 
-		// Skip adding any permanently irreconcilable channels to the
-		// htlcswitch.
-		if dbChan.IsBorked {
-			peerLog.Warnf("ChannelPoint(%v) is borked, won't "+
-				"start.", chanPoint)
-			lnChan.Stop()
-			continue
-		}
-
-		// Also skip adding any channel marked as `failed` for this
+		// We'll skip adding any channel marked as `failed` for this
 		// session.
 		if _, ok := p.failedChannels[chanID]; ok {
 			peerLog.Warnf("ChannelPoint(%v) is failed, won't "+
