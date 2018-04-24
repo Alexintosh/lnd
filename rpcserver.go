@@ -1457,7 +1457,8 @@ func (r *rpcServer) PendingChannels(ctx context.Context,
 
 		// If the channel was force closed, then we'll need to query
 		// the utxoNursery for additional information.
-		case channeldb.ForceClose:
+		// TODO(halseth): distinguish remote and local case?
+		case channeldb.LocalForceClose, channeldb.RemoteForceClose:
 			forceClose := &lnrpc.PendingChannelsResponse_ForceClosedChannel{
 				Channel:     channel,
 				ClosingTxid: closeTXID,
