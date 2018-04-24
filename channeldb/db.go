@@ -419,9 +419,9 @@ func (d *DB) FetchClosedChannels(pendingOnly bool) ([]*ChannelCloseSummary, erro
 			}
 
 			// If the query specified to only include pending
-			// channels, then we'll skip any channels which aren't
-			// currently pending.
-			if !chanSummary.IsPending && pendingOnly {
+			// channels, then we'll skip any channels which are
+			// fully closed.
+			if pendingOnly && chanSummary.CloseStatus == FullyClosed {
 				return nil
 			}
 
@@ -505,7 +505,7 @@ func (d *DB) MarkChanFullyClosed(chanPoint *wire.OutPoint) error {
 			return err
 		}
 
-		chanSummary.IsPending = false
+		chanSummary.CloseStatus = FullyClosed
 
 		var newSummary bytes.Buffer
 		err = serializeChannelCloseSummary(&newSummary, chanSummary)
