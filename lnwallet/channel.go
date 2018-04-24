@@ -4755,7 +4755,7 @@ func NewUnilateralCloseSummary(chanState *channeldb.OpenChannel, signer Signer,
 		Capacity:       chanState.Capacity,
 		SettledBalance: localBalance,
 		CloseType:      channeldb.RemoteForceClose,
-		IsPending:      true,
+		CloseStatus:    channeldb.CommitmentBroadcasted,
 	}
 
 	return &UnilateralCloseSummary{
