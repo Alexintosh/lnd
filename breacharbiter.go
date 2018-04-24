@@ -175,7 +175,8 @@ func (b *breachArbiter) Start() error {
 	// remove the entry from our in-memory map, to avoid any further action
 	// for this channel.
 	for _, chanSummary := range closedChans {
-		if chanSummary.IsPending {
+		// TODO: what about the other states?
+		if chanSummary.CloseStatus == channeldb.FullyClosed {
 			continue
 		}
 
