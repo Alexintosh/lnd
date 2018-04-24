@@ -473,15 +473,13 @@ func (c *ChannelArbitrator) stateStep(triggerHeight uint32,
 			HtlcResolutions:  *closeSummary.HtlcResolutions,
 		}
 
-		// Now that the transaction has been broadcast, we can mark
-		// that it has been closed to outside sub-systems.
-		err = c.markContractClosed(
-			closeTx, closeSummary.ChanSnapshot, &contractRes,
-			bestHeight,
-		)
+		err = c.markLocalForceCloseBroadcasted(closeTx,
+			closeSummary.ChanSnapshot, &contractRes,
+			triggerHeight)
 		if err != nil {
-			log.Errorf("unable to close contract: %v", err)
-			return StateError, closeTx, err
+			log.Errorf("ChannelArbitrator(%v): unable to "+
+				"mark commitment broadcasted: %v",
+				c.cfg.ChanPoint, err)
 		}
 
 		// We go to the StateCommitmentBroadcasted state, where we'll
@@ -1556,25 +1554,27 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 	}
 }
 
-// markContractClosed marks a contract as "pending closed". After this state,
-// upon restart, we'll no longer watch for updates to the set of contracts as
-// the channel cannot be updated any longer.
-func (c *ChannelArbitrator) markContractClosed(closeTx *wire.MsgTx,
+// markLocalForceCloseBroadcasted marks a contract as "pending closed" by
+// setting its CloseStatus to CommitmentBroadcasted in the database. After this
+// state, upon restart, we'll no longer watch for updates to the set of
+// contracts as the channel cannot be updated any longer.
+func (c *ChannelArbitrator) markLocalForceCloseBroadcasted(closeTx *wire.MsgTx,
 	chanSnapshot channeldb.ChannelSnapshot,
 	contractResolution *ContractResolutions,
 	closeHeight uint32) error {
 
 	// TODO(roasbeef): also need height info?
 	closeInfo := &channeldb.ChannelCloseSummary{
-		ChanPoint:   chanSnapshot.ChannelPoint,
-		ChainHash:   chanSnapshot.ChainHash,
-		ClosingTXID: closeTx.TxHash(),
-		RemotePub:   &chanSnapshot.RemoteIdentity,
-		Capacity:    chanSnapshot.Capacity,
-		CloseType:   channeldb.ForceClose,
-		IsPending:   true,
-		ShortChanID: c.cfg.ShortChanID,
-		CloseHeight: closeHeight,
+		ChanPoint:         chanSnapshot.ChannelPoint,
+		ChainHash:         chanSnapshot.ChainHash,
+		ClosingTXID:       closeTx.TxHash(),
+		RemotePub:         &chanSnapshot.RemoteIdentity,
+		Capacity:          chanSnapshot.Capacity,
+		CloseType:         channeldb.LocalForceClose,
+		CloseStatus:       channeldb.CommitmentBroadcasted,
+		ShortChanID:       c.cfg.ShortChanID,
+		CloseHeight:       closeHeight,
+		TimeLockedBalance: chanSnapshot.LocalBalance.ToSatoshis(),
 	}
 
 	// If our commitment output isn't dust or we have active HTLC's on the
