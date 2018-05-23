@@ -342,6 +342,10 @@ type channelLink struct {
 	started  int32
 	shutdown int32
 
+	// failed should be set to true in case a link error happens, making
+	// sure we don't process any more updates.
+	failed bool
+
 	// batchCounter is the number of updates which we received from remote
 	// side, but not include in commitment transaction yet and plus the
 	// current number of settles that have been sent, but not yet committed
@@ -893,9 +897,16 @@ func (l *channelLink) htlcManager() {
 	batchTick := l.cfg.BatchTicker.Start()
 	defer l.cfg.BatchTicker.Stop()
 
-	// TODO(roasbeef): fail chan in case of protocol violation
 out:
 	for {
+
+		// We must always check if we failed at some point processing
+		// the last update before processing the next.
+		if l.failed {
+			l.errorf("link failed, exiting htlcManager")
+			break out
+		}
+
 		select {
 
 		// A new block has arrived, we'll check the network fee to see
@@ -2632,6 +2643,10 @@ func (l *channelLink) fail(linkErr LinkFailureError,
 	format string, a ...interface{}) {
 	reason := errors.Errorf(format, a...)
 	l.errorf("Failing link: %s", reason)
+
+	// Set failed, such that we won't process any more updates, and notify
+	// the peer about the failure.
+	l.failed = true
 	l.cfg.OnChannelFailure(l.ChanID(), l.ShortChanID(), linkErr)
 }
 
