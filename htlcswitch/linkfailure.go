@@ -59,7 +59,7 @@ var _ error = (*LinkFailureError)(nil)
 
 // Error returns a generic error for the LinkFailureError.
 //
-// NOTE: Part of the Error interface.
+// NOTE: Part of the error interface.
 func (e LinkFailureError) Error() string {
 	switch e.code {
 	case ErrInternalError:
