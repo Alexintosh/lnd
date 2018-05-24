@@ -523,6 +523,9 @@ func (p *peer) addLink(chanPoint *wire.OutPoint,
 				}
 
 				// Initiate disconnection.
+				// TODO(halseth): consider not disconnecting
+				// the peer, as we might still have other
+				// active channels with the same peer.
 				p.Disconnect(linkErr)
 			}()
 		},
