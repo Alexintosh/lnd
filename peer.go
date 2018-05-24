@@ -542,10 +542,7 @@ func (p *peer) addLink(chanPoint *wire.OutPoint,
 	// With the channel link created, we'll now notify the htlc switch so
 	// this channel can be used to dispatch local payments and also
 	// passively forward payments.
-	if err := p.server.htlcSwitch.AddLink(link); err != nil {
-		return err
-	}
-	return nil
+	return p.server.htlcSwitch.AddLink(link)
 }
 
 // WaitForDisconnect waits until the peer has disconnected. A peer may be
