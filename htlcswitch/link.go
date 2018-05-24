@@ -171,7 +171,7 @@ type ChannelLinkConfig struct {
 	PreimageCache contractcourt.WitnessBeacon
 
 	// OnChannelFailure is a function closure that we'll call if the
-	// channel fail for some reason. Depending on the severity of the
+	// channel failed for some reason. Depending on the severity of the
 	// error, the closure potentially must force close this channel and
 	// disconnect the peer.
 	//
