@@ -704,7 +704,8 @@ func (l *channelLink) resolveFwdPkg(fwdPkg *channeldb.FwdPkg) (bool, error) {
 		// return to ensure we won't attempted to update the state
 		// further.
 		if l.failed {
-			return false, fmt.Errorf("link failed")
+			return false, fmt.Errorf("link failed while " +
+				"processing remote adds")
 		}
 	}
 
