@@ -699,6 +699,13 @@ func (l *channelLink) resolveFwdPkg(fwdPkg *channeldb.FwdPkg) (bool, error) {
 			fwdPkg.Source, fwdPkg.Height, fwdPkg.Adds,
 		)
 		needUpdate = l.processRemoteAdds(fwdPkg, adds)
+
+		// If the link failed during processing the adds, we must
+		// return to ensure we won't attempted to update the state
+		// further.
+		if l.failed {
+			return false, fmt.Errorf("link failed")
+		}
 	}
 
 	return needUpdate, nil
@@ -1374,8 +1381,15 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 		}
 
 		l.processRemoteSettleFails(fwdPkg, settleFails)
-
 		needUpdate := l.processRemoteAdds(fwdPkg, adds)
+
+		// If the link failed during processing the adds, we must
+		// return to ensure we won't attempted to update the state
+		// further.
+		if l.failed {
+			return
+		}
+
 		if needUpdate {
 			if err := l.updateCommitTx(); err != nil {
 				l.fail(LinkFailureError{code: ErrInternalError},
@@ -2555,6 +2569,12 @@ func (l *channelLink) fail(linkErr LinkFailureError,
 	format string, a ...interface{}) {
 	reason := errors.Errorf(format, a...)
 	l.errorf("Failing link: %s", reason)
+
+	// Return if we have already notified about a failure.
+	if l.failed {
+		l.warnf("Already failed")
+		return
+	}
 
 	// Set failed, such that we won't process any more updates, and notify
 	// the peer about the failure.
