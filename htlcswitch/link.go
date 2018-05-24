@@ -2568,13 +2568,15 @@ func (l *channelLink) sendMalformedHTLCError(htlcIndex uint64,
 func (l *channelLink) fail(linkErr LinkFailureError,
 	format string, a ...interface{}) {
 	reason := errors.Errorf(format, a...)
-	l.errorf("Failing link: %s", reason)
 
 	// Return if we have already notified about a failure.
 	if l.failed {
-		l.warnf("Already failed")
+		l.warnf("Ignoring link failure (%v), as link already failed",
+			reason)
 		return
 	}
+
+	l.errorf("Failing link: %s", reason)
 
 	// Set failed, such that we won't process any more updates, and notify
 	// the peer about the failure.
